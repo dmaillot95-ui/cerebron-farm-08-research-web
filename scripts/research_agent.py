@@ -15,7 +15,7 @@ def payload_for(spec,prompt):
         elif lname in {'chat_history','history','messages'}:
             payload[name]=[]
         elif lname in {'max_new_tokens','max_tokens','maximum_new_tokens'}:
-            payload[name]=900
+            payload[name]=700
         elif lname=='temperature': payload[name]=0.1
         elif lname=='top_p': payload[name]=0.9
         elif lname=='top_k': payload[name]=40
@@ -57,19 +57,35 @@ def invoke(space,prompt):
         if pred.returncode==0 and (pred.stdout or '').strip():
             text=extract(pred.stdout)
             if text:
-                return True,text,{'stage':'predict','endpoint':endpoint,'sha256':hashlib.sha256(text.encode()).hexdigest()}
+                return True,text,{'stage':'predict','endpoint':endpoint,'sha256':hashlib.sha256(text.encode()).hexdigest(),'prompt_chars':len(prompt)}
         errors.append((pred.stderr or pred.stdout)[-700:])
-    return False,'',{'stage':'predict','error':' | '.join(errors[-3:]) or 'No compatible endpoint'}
+    return False,'',{'stage':'predict','error':' | '.join(errors[-3:]) or 'No compatible endpoint','prompt_chars':len(prompt)}
+
+def compact_source(s):
+    keep={}
+    for k in ('title','provider','url','doi','published','date','summary','snippet','abstract'):
+        v=s.get(k)
+        if v is None: continue
+        if isinstance(v,str):
+            v=v.strip()
+            if k in {'summary','snippet','abstract'}:
+                v=v[:500]
+            elif k=='title':
+                v=v[:220]
+        keep[k]=v
+    return keep
 
 role=os.environ['ROLE']
 model=os.environ['MODEL']
 focus=os.environ.get('FOCUS','')
 packet=json.load(open('source_packet.json',encoding='utf-8'))
-sources=packet.get('sources',[])[:80]
+sources=[compact_source(s) for s in packet.get('sources',[])[:12]]
 context=json.dumps({'generated_at_utc':packet.get('generated_at_utc'),'sources':sources},ensure_ascii=False)
+# Keep generous margin below the 4096-token Space limit. Character cap is deliberately conservative.
+context=context[:9000]
 prompt=f'''You are role {role} in CEREBRON Farm 08 Research Web.\nFOCUS: {focus}\nRules: CLAIM<=EVIDENCE. Analyze ONLY the supplied collected source packet. Do not claim live web access. For every external factual claim, identify source title/provider/url or DOI from the packet. Distinguish ESTABLISHED / PREPRINT-OR-UNVERIFIED / INFERENCE / UNKNOWN. Detect weak or irrelevant sources. Return concise structured findings, source_links, caveats, routing_targets and unknowns.\nSOURCE_PACKET:\n{context}'''
 ok,text,meta=invoke(model,prompt)
 out={'role':role,'model':model,'focus':focus,'inference_success':bool(ok),'status':'UNREVIEWED_EXTERNAL_AGENT_OUTPUT' if ok else 'EXTERNAL_INFERENCE_FAILED','error':None if ok else meta.get('error'),'result':text if ok else None,'meta':meta}
 pathlib.Path('out').mkdir(exist_ok=True)
 open(f'out/{role}.json','w',encoding='utf-8').write(json.dumps(out,ensure_ascii=False,indent=2))
-print(json.dumps({'role':role,'inference_success':bool(ok),'model':model}))
+print(json.dumps({'role':role,'inference_success':bool(ok),'model':model,'prompt_chars':len(prompt)}))
