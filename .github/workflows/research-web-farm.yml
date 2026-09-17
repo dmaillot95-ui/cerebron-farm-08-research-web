@@ -1,0 +1,116 @@
+name: CEREBRON Farm 08 Research Web
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Collect real public sources
+        run: python scripts/collect_sources.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: farm08-source-packet
+          path: source_packet.json
+
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        shell: python
+        run: |
+          import json, os
+          roles=[
+            ("SCIENTIFIC_LITERATURE_SCOUT","huggingface-projects/llama-3.2-3B-Instruct","scientific literature and primary papers"),
+            ("PREPRINT_SCOUT","huggingface-projects/gemma-2-9b-it","recent preprints and status caveats"),
+            ("STANDARDS_SCOUT","huggingface-projects/llama-3.2-3B-Instruct","public standards and engineering guidance"),
+            ("PATENT_PRIOR_ART_SCOUT","huggingface-projects/gemma-2-9b-it","prior art and patent-adjacent evidence"),
+            ("INSTITUTIONAL_REPORT_SCOUT","huggingface-projects/llama-3.2-3B-Instruct","government and institutional reports"),
+            ("PUBLIC_DATA_SCOUT","huggingface-projects/gemma-2-9b-it","public datasets and quantitative evidence"),
+            ("AI_TECH_SCOUT","huggingface-projects/llama-3.2-3B-Instruct","AI systems and agents"),
+            ("ENERGY_TECH_SCOUT","huggingface-projects/gemma-2-9b-it","energy technologies"),
+            ("SPACE_TECH_SCOUT","huggingface-projects/llama-3.2-3B-Instruct","space and propulsion"),
+            ("MATERIALS_MANUFACTURING_SCOUT","huggingface-projects/gemma-2-9b-it","materials and manufacturing"),
+            ("ROBOTICS_SCOUT","huggingface-projects/llama-3.2-3B-Instruct","robotics and autonomy"),
+            ("CYBERSECURITY_SCOUT","huggingface-projects/gemma-2-9b-it","cybersecurity and resilience"),
+            ("CLIMATE_INFRASTRUCTURE_SCOUT","huggingface-projects/llama-3.2-3B-Instruct","climate and infrastructure"),
+            ("ECONOMICS_TECH_SCOUT","huggingface-projects/gemma-2-9b-it","economics and technology productivity"),
+            ("SOURCE_QUALITY_AUDITOR","huggingface-projects/gemma-2-9b-it","source authority, date, venue, relevance"),
+            ("CLAIM_SOURCE_MATCHER","huggingface-projects/llama-3.2-3B-Instruct","match each claim to exact sources"),
+            ("CONTRADICTION_HUNTER","huggingface-projects/llama-3.2-3B-Instruct","identify conflicting evidence"),
+            ("METHOD_TRANSFER_SCOUT","huggingface-projects/gemma-2-9b-it","transferable methods across domains"),
+            ("ROUTING_COORDINATOR","huggingface-projects/llama-3.2-3B-Instruct","route evidence to specialized farms"),
+            ("OMEGA_RESEARCH_SYNTHESIZER","huggingface-projects/gemma-2-9b-it","merge only source-backed findings")]
+          arr=[{"role":r,"model":m,"focus":f} for r,m,f in roles]
+          with open(os.environ['GITHUB_OUTPUT'],'a') as g:
+            g.write('matrix='+json.dumps(arr,separators=(',',':'))+'\n')
+
+  research-agent:
+    needs: [collect, plan]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install --quiet hf-gradio
+      - uses: actions/download-artifact@v4
+        with:
+          name: farm08-source-packet
+      - name: Analyze collected evidence
+        env:
+          ROLE: ${{ matrix.role }}
+          MODEL: ${{ matrix.model }}
+          FOCUS: ${{ matrix.focus }}
+        run: python scripts/research_agent.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: farm08-${{ matrix.role }}
+          path: out/${{ matrix.role }}.json
+
+  omega-fusion:
+    if: always()
+    needs: research-agent
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: farm08-*
+          path: all
+          merge-multiple: true
+      - name: Build Omega packet
+        run: |
+          python - <<'PY'
+          import json,glob
+          rows=[]
+          for f in glob.glob('all/*.json'):
+              try:
+                  x=json.load(open(f,encoding='utf-8'))
+                  if 'role' in x: rows.append(x)
+              except: pass
+          packet={
+            'roles_returned':len(rows),
+            'successful_external_ai_calls':sum(1 for x in rows if x.get('inference_success')),
+            'model_families':sorted(set('gemma-2' if 'gemma' in x.get('model','') else 'llama-3.2' if 'llama' in x.get('model','') else x.get('model','') for x in rows if x.get('inference_success'))),
+            'results':rows,
+            'epistemic_status':'UNREVIEWED_EXTERNAL_AGENT_OUTPUT'
+          }
+          open('farm08-omega-packet.json','w',encoding='utf-8').write(json.dumps(packet,ensure_ascii=False,indent=2))
+          print(json.dumps({k:packet[k] for k in ['roles_returned','successful_external_ai_calls','model_families']}))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: farm08-omega-packet
+          path: farm08-omega-packet.json
